@@ -1,7 +1,7 @@
 from typing import Any, Optional
 
 from app.models.schemas import Segment
-from app.services.subtitle_service import merge_khmer_compounds
+from app.services.subtitle_service import merge_khmer_compounds, replace_words
 
 MIN_DURATION = 0.060
 
@@ -51,6 +51,8 @@ def process_segments(
     words = _to_word_dicts(segments)
 
     words = _normalize_word_timestamps(words)
+
+    words = replace_words(words)
 
     words = merge_khmer_compounds(words)
 

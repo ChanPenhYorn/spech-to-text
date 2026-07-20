@@ -5,6 +5,13 @@ from app.models.schemas import Segment
 MIN_DURATION = 0.060
 ADJUSTMENT_MS = 5
 
+WORD_REPLACEMENTS: dict[str, str] = {
+    "ហ្វេសប៊ុក": "Facebook",
+    "ហ្វេសប៊ុក្ក": "Facebook",
+    "តុក្កតា": "TikTok",
+    "សុខស្រីនាង": "សួស្ដី",
+}
+
 KHMER_COMPOUNDS: list[tuple[str, str, str]] = [
     ("ពាណិជ្ជ", "កម្ម", "ពាណិជ្ជកម្ម"),
     ("នៅ", "លើ", "នៅលើ"),
@@ -30,7 +37,21 @@ KHMER_COMPOUNDS: list[tuple[str, str, str]] = [
     ("មើល", "ទៅ", "មើលទៅ"),
     ("គេហ", "ទំព័រ", "គេហទំព័រ"),
     ("ព័ត៌", "មាន", "ព័ត៌មាន"),
+    ("tik", "tok", "TikTok"),
+    ("ជម្រាបលា", "បែក", "ជម្រាបលា Bye Bye"),
 ]
+
+
+def replace_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not words:
+        return []
+    result = []
+    for w in words:
+        out = dict(w)
+        if out["word"] in WORD_REPLACEMENTS:
+            out["word"] = WORD_REPLACEMENTS[out["word"]]
+        result.append(out)
+    return result
 
 
 def merge_khmer_compounds(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
