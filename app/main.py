@@ -1,7 +1,7 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from app.config.settings import settings
-from app.bot.handlers import start_command, v1_command, v2_command, handle_audio
+from app.bot.handlers import start_command, v1_command, v2_command, v3_command, handle_audio
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -24,10 +24,11 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("v2", v2_command))
     app.add_handler(CommandHandler("v1", v1_command))
+    app.add_handler(CommandHandler("v3", v3_command))
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE | filters.Document.ALL, handle_audio))
 
     logger.info("Bot started. Max usage: %d", settings.max_usage_per_user)
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":

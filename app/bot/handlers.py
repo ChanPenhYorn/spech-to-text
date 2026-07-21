@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 
 from telegram import Update
@@ -20,11 +21,11 @@ from app.bot.responses import (
 )
 from app.services import transcription as transcription_v1
 from app.services import transcription_v2
+from app.services import transcription_whisper as transcription_v3
 from app.services.file_service import is_supported, download_audio
 from app.services.audio_service import convert_to_wav
 from app.services.subtitle_service import segments_to_text, segments_to_srt
 from app.services.word_timestamp_processor import process_segments
-
 from app.utils.file_utils import cleanup_temp
 from app.utils.logger import setup_logger
 
@@ -34,21 +35,33 @@ logger = setup_logger(__name__)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     logger.info("User %s (%s) started the bot", user.id, user.full_name)
-    mode = context.user_data.get("use_v2", False)
-    engine = "V2 (latest_long)" if mode else "V1 (standard)"
-    await update.message.reply_text(f"{WELCOME_MESSAGE}\n\nEngine: {engine}\n/v2 — Toggle V2 engine (/v1 to switch back)")
-
-
-async def v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["use_v2"] = True
-    logger.info("User %s switched to V2 engine", update.effective_user.id)
-    await update.message.reply_text("Switched to Google STT V2 (latest_long). /v1 to switch back.")
+    engine = context.user_data.get("engine", "v1")
+    engine_label = {"v1": "V1 (Google STT)", "v2": "V2 (Google STT latest)", "v3": "V3 (Whisper Khmer)"}.get(engine, engine)
+    await update.message.reply_text(
+        f"{WELCOME_MESSAGE}\n\n"
+        f"Engine: {engine_label}\n"
+        f"/v1 — Google STT standard\n"
+        f"/v2 — Google STT latest_long\n"
+        f"/v3 — Whisper Khmer (experimental)"
+    )
 
 
 async def v1_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["use_v2"] = False
+    context.user_data["engine"] = "v1"
     logger.info("User %s switched to V1 engine", update.effective_user.id)
-    await update.message.reply_text("Switched to Google STT V1 (standard). /v2 for V2 engine.")
+    await update.message.reply_text("Switched to Google STT V1 (standard). /v3 for Whisper Khmer.")
+
+
+async def v2_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["engine"] = "v2"
+    logger.info("User %s switched to V2 engine", update.effective_user.id)
+    await update.message.reply_text("Switched to Google STT V2 (latest_long). /v3 for Whisper Khmer.")
+
+
+async def v3_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["engine"] = "v3"
+    logger.info("User %s switched to V3 Whisper Khmer engine", update.effective_user.id)
+    await update.message.reply_text("Switched to Whisper Khmer (V3). May be slow on first use (model loading).")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -79,20 +92,35 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         loop = asyncio.get_event_loop()
         temp_wav = await loop.run_in_executor(None, convert_to_wav, temp_audio)
 
-        use_v2 = context.user_data.get("use_v2", False)
-        transcribe_fn = transcription_v2.transcribe if use_v2 else transcription_v1.transcribe
-        engine_label = "V2 latest_long" if use_v2 else "V1 standard"
+        engine = context.user_data.get("engine", "v1")
+        if engine == "v3":
+            transcribe_fn = transcription_v3.transcribe
+            engine_label = "V3 Whisper Khmer"
+        elif engine == "v2":
+            transcribe_fn = transcription_v2.transcribe
+            engine_label = "V2 Google STT latest_long"
+        else:
+            transcribe_fn = transcription_v1.transcribe
+            engine_label = "V1 Google STT standard"
+
+        is_whisper = engine == "v3"
+
+        processing_msg = await message.reply_text(PROCESSING_MESSAGE)
 
         result = await loop.run_in_executor(None, transcribe_fn, temp_wav)
 
-        processed = await loop.run_in_executor(
-            None, process_segments, result.segments, temp_wav
-        )
+        if is_whisper:
+            processed = result.segments
+            plain_text = segments_to_text(processed)
+        else:
+            processed = await loop.run_in_executor(
+                None, process_segments, result.segments, temp_wav
+            )
+            plain_text = segments_to_text(processed)
 
-        plain_text = segments_to_text(processed)
         lang_display = get_language_display(result.language)
 
-        await message.reply_text(
+        await processing_msg.edit_text(
             f"{TRANSCRIPTION_HEADER}\n"
             f"{LANGUAGE_LABEL} {lang_display}\n"
             f"{plain_text}\n\n"
@@ -100,13 +128,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Engine: {engine_label}"
         )
 
-        await message.reply_text(PROCESSING_MESSAGE)
-
         srt_content = segments_to_srt(processed)
-
         elapsed = int(time.time() - start_time)
-
-        srt_file_name = f"{audio.file_id}.srt"
+        base_name = os.path.splitext(file_name)[0]
+        srt_file_name = f"{base_name}.srt"
         await message.reply_document(
             document=srt_content.encode("utf-8"),
             filename=srt_file_name,

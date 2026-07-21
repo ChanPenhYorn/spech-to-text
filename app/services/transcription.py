@@ -15,7 +15,31 @@ logger = setup_logger(__name__)
 
 _token: Optional[str] = None
 _token_expiry: float = 0
-CHUNK_DURATION = 59
+CHUNK_DURATION = 10
+CHUNK_OVERLAP = 2
+
+
+def _merge_subword_tokens(tokens: list[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
+    words: list[tuple[str, float, float]] = []
+    current_word = ""
+    current_start = 0.0
+    current_end = 0.0
+
+    for txt, st, et in tokens:
+        if txt.startswith("▁"):
+            if current_word:
+                words.append((current_word, current_start, current_end))
+            current_word = txt[1:]
+            current_start = st
+            current_end = et
+        else:
+            current_word += txt
+            current_end = et
+
+    if current_word:
+        words.append((current_word, current_start, current_end))
+
+    return words
 
 
 def _get_bearer_token() -> str:
@@ -43,28 +67,31 @@ def _get_duration(audio_path: str) -> float:
     return float(result.stdout.strip())
 
 
-def _split_audio(audio_path: str, chunk_duration: int) -> list[tuple[float, str]]:
+def _split_audio(audio_path: str, chunk_duration: int) -> list[tuple[float, float, str]]:
     duration = _get_duration(audio_path)
-    chunks: list[tuple[float, str]] = []
-    start = 0
+    chunks: list[tuple[float, float, str]] = []
+    official_start = 0
 
-    while start < duration:
-        chunk_dur = min(chunk_duration, duration - start)
+    while official_start < duration:
+        actual_start = max(0, official_start - CHUNK_OVERLAP)
+        chunk_end = min(duration, official_start + chunk_duration + CHUNK_OVERLAP)
+        chunk_len = chunk_end - actual_start
         output_path = create_temp_file(suffix=".wav")
         subprocess.run(
             [
                 "ffmpeg", "-y", "-i", audio_path,
-                "-ss", str(start),
-                "-t", str(chunk_dur),
+                "-ss", str(actual_start),
+                "-t", str(chunk_len),
                 "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
+                "-af", "loudnorm=I=-16:LRA=11:TP=-1.5",
                 output_path,
             ],
             capture_output=True,
             text=True,
             timeout=60,
         )
-        chunks.append((start, output_path))
-        start += chunk_duration
+        chunks.append((official_start, actual_start, output_path))
+        official_start += chunk_duration
 
     return chunks
 
@@ -92,6 +119,22 @@ def _transcribe_chunk(audio_path: str, time_offset: float, token: str) -> tuple[
             "alternativeLanguageCodes": ["en-US"],
             "enableWordTimeOffsets": True,
             "enableAutomaticPunctuation": True,
+            "model": "latest_short",
+            "speechContexts": [{
+                "phrases": [
+                    "ទូរស័ព្ទ", "ទិន្នន័យ", "គណនី", "លុប",
+                    "App", "server", "delete account",
+                    "ព័ត៌មាន", "សេវាកម្ម", "ក្រុមហ៊ុន",
+                    "ចែករំលែក", "មុខងារ", "តាមរយៈ",
+                    "ទាំងស្រុង", "មួយចំនួន", "រក្សាទុក",
+                    "លុបចោល", "លុបចេញ", "ធ្លាប់",
+                    "ទូរសព្ទ", "ធម្មតា", "ប្រើ",
+                    "សន្យា", "បណ្ដាញ", "សង្គម", "បណ្ដាញសង្គម",
+                    "សង្ស័យ", "គួរឲ្យ", "ប្រាក់ខែ",
+                    "អញ្ចឹង", "ការពិត", "និង",
+                ],
+                "boost": 10,
+            }],
         },
         "audio": {"content": encoded},
     }
@@ -146,13 +189,13 @@ def _transcribe_chunk(audio_path: str, time_offset: float, token: str) -> tuple[
 
     for entry in response_data.get("results", []):
         alternative = entry["alternatives"][0]
-        words = alternative.get("words", [])
-
         if "languageCode" in entry:
             detected_lang = entry["languageCode"]
 
-        if words:
-            for w in words:
+        raw_words = alternative.get("words", [])
+        if raw_words:
+            raw_tokens: list[tuple[str, float, float]] = []
+            for w in raw_words:
                 text = w.get("word", "").strip()
                 if not text:
                     continue
@@ -160,9 +203,13 @@ def _transcribe_chunk(audio_path: str, time_offset: float, token: str) -> tuple[
                 end = _duration_to_seconds(w["endTime"]) + time_offset
                 if end <= start:
                     end = start + 0.060
-                segments.append(Segment(start=start, end=end, text=text))
+                raw_tokens.append((text, start, end))
                 if end > chunk_duration:
                     chunk_duration = end
+
+            merged = _merge_subword_tokens(raw_tokens)
+            for text, start, end in merged:
+                segments.append(Segment(start=start, end=end, text=text))
         else:
             seg_text = alternative.get("transcript", "").strip()
             if seg_text:
@@ -182,20 +229,24 @@ def transcribe(audio_path: str) -> TranscriptionResult:
             )
             temp_chunks = _split_audio(audio_path, CHUNK_DURATION)
         else:
-            temp_chunks = [(0.0, audio_path)]
+            temp_chunks = [(0.0, 0.0, audio_path)]
 
         token = _get_bearer_token()
         all_segments: list[Segment] = []
         detected_lang = "km"
         total_duration = 0.0
+        prev_last_end = 0.0
 
-        for i, (chunk_start, chunk_path) in enumerate(temp_chunks):
-            segs, lang, chunk_dur = _transcribe_chunk(chunk_path, chunk_start, token)
+        for i, (chunk_start, actual_start, chunk_path) in enumerate(temp_chunks):
+            segs, lang, chunk_dur = _transcribe_chunk(chunk_path, actual_start, token)
+            if i > 0:
+                segs = [s for s in segs if s.start >= prev_last_end]
             all_segments.extend(segs)
             if lang != "km":
                 detected_lang = lang
             if segs:
                 last_end = segs[-1].end
+                prev_last_end = max(prev_last_end, last_end)
                 if last_end > total_duration:
                     total_duration = last_end
             logger.info("Chunk %d/%d done: %d segments", i + 1, len(temp_chunks), len(segs))
@@ -214,6 +265,7 @@ def transcribe(audio_path: str) -> TranscriptionResult:
         return result
 
     finally:
-        for _, chunk_path in temp_chunks:
+        for entry in temp_chunks:
+            chunk_path = entry[2] if len(entry) == 3 else entry[1]
             if chunk_path != audio_path:
                 cleanup_temp(chunk_path)
