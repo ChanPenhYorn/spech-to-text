@@ -14,3 +14,9 @@ build/
 *.swo
 *~
 .DS_Store
+
+bot.log
+app/training/adapters/
+
+bot.log
+app/training/adapters/

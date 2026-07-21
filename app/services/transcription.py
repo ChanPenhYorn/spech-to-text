@@ -15,7 +15,7 @@ logger = setup_logger(__name__)
 
 _token: Optional[str] = None
 _token_expiry: float = 0
-CHUNK_DURATION = 10
+CHUNK_DURATION = 15
 CHUNK_OVERLAP = 2
 
 
@@ -83,7 +83,6 @@ def _split_audio(audio_path: str, chunk_duration: int) -> list[tuple[float, floa
                 "-ss", str(actual_start),
                 "-t", str(chunk_len),
                 "-ar", "16000", "-ac", "1", "-sample_fmt", "s16",
-                "-af", "loudnorm=I=-16:LRA=11:TP=-1.5",
                 output_path,
             ],
             capture_output=True,

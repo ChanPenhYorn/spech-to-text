@@ -26,6 +26,8 @@ from app.services.file_service import is_supported, download_audio
 from app.services.audio_service import convert_to_wav
 from app.services.subtitle_service import segments_to_text, segments_to_srt
 from app.services.word_timestamp_processor import process_segments
+from app.training.rule_extractor import add_pair
+from app.training.learn_from_audio import find_diffs
 from app.utils.file_utils import cleanup_temp
 from app.utils.logger import setup_logger
 
@@ -118,6 +120,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             plain_text = segments_to_text(processed)
 
+        context.user_data["last_stt"] = plain_text
+
         lang_display = get_language_display(result.language)
 
         await processing_msg.edit_text(
@@ -159,3 +163,181 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             cleanup_temp(temp_audio)
         if temp_wav:
             cleanup_temp(temp_wav)
+
+
+async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Compare last STT result with user-provided correct text. Usage: /learn <correct text>"""
+    user = update.effective_user
+    last_stt = context.user_data.get("last_stt")
+    if not last_stt:
+        await update.message.reply_text("No previous transcription found. Send an audio file first.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /learn <correct text>")
+        return
+
+    correct_text = " ".join(args)
+    add_pair(last_stt, correct_text)
+    diffs = find_diffs(last_stt, correct_text)
+
+    if not diffs:
+        await update.message.reply_text("No differences found — STT output matches!")
+        return
+
+    new_count = sum(1 for d in diffs if not d["already_have"])
+    existing_count = sum(1 for d in diffs if d["already_have"])
+
+    lines = [f"Found {len(diffs)} differences ({new_count} new, {existing_count} already fixed):"]
+    for d in diffs[:10]:
+        status = "✅" if d["already_have"] else "❌"
+        lines.append(f"{status} {d['affected_text']} → {d['value']}")
+
+    if len(diffs) > 10:
+        lines.append(f"... and {len(diffs) - 10} more")
+
+    await update.message.reply_text("\n".join(lines))
+
+    # Auto-apply new rules
+    new_rules = [d for d in diffs if not d["already_have"]]
+    if new_rules:
+        await update.message.reply_text(f"🔄 Auto-applying {len(new_rules)} new rules...")
+        new_rep = {}
+        for d in new_rules:
+            if d["rule_type"] == "WORD_REPLACEMENT":
+                new_rep[d["key"]] = d["value"]
+        new_comp = []
+        for d in new_rules:
+            if d["rule_type"] == "COMPOUND":
+                words = d["key"]
+                new_comp.append((words[0], words[1], d["value"]))
+
+        from app.training.auto_learn import apply_rules
+        if apply_rules(new_rep, new_comp):
+            await update.message.reply_text(f"✅ Rules applied! Restarting bot to activate...")
+            await asyncio.sleep(1)
+            os.chdir(os.path.join(os.path.dirname(__file__), "..", ".."))
+            os.execvp("python", ["python", "-m", "app.main"])
+        else:
+            await update.message.reply_text("❌ Failed to apply rules.")
+
+
+async def learn_yt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Auto-learn from YouTube: download audio + captions, compare STT vs captions."""
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /learn_yt <youtube_url>")
+        return
+
+    url = args[0]
+    msg = await update.message.reply_text("⏳ Downloading audio and captions from YouTube...")
+
+    try:
+        import yt_dlp
+
+        loop = asyncio.get_event_loop()
+        temp_dir = os.path.join(os.path.dirname(__file__), "..", "..", "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        def _fetch():
+            out_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
+            ydl_opts = {
+                "format": "bestaudio/best",
+                "outtmpl": out_template,
+                "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}],
+                "writesubtitles": True,
+                "subtitleslangs": ["km"],
+                "skip_download": False,
+                "quiet": True,
+                "writeautomaticsub": False,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                video_id = info["id"]
+                audio_path = os.path.join(temp_dir, f"{video_id}.m4a")
+                subs_path = os.path.join(temp_dir, f"{video_id}.km.vtt")
+                subs_path2 = os.path.join(temp_dir, f"{video_id}.km.vtt")
+                # Check alternative paths
+                if not os.path.exists(subs_path):
+                    subs_path = os.path.join(temp_dir, f"{video_id}.km.vtt")
+                return audio_path, subs_path, info
+
+        audio_path, subs_path, info = await loop.run_in_executor(None, _fetch)
+
+        if not os.path.exists(audio_path):
+            await msg.edit_text("❌ Failed to download audio.")
+            return
+
+        if not os.path.exists(subs_path):
+            await msg.edit_text(
+                "❌ No Khmer captions found for this video. "
+                "The video needs manually uploaded Khmer subtitles."
+            )
+            return
+
+        await msg.edit_text("⏳ Extracting captions...")
+        def _read_subs():
+            import webvtt
+            captions = webvtt.read(subs_path)
+            return " ".join(c.text.replace("\n", " ").strip() for c in captions)
+
+        correct_text = await loop.run_in_executor(None, _read_subs)
+
+        await msg.edit_text("⏳ Running STT on audio...")
+        from app.services.audio_service import convert_to_wav
+        wav_path = await loop.run_in_executor(None, convert_to_wav, audio_path)
+        result = await loop.run_in_executor(None, transcription_v1.transcribe, wav_path)
+        processed = await loop.run_in_executor(None, process_segments, result.segments, wav_path)
+        our_text = segments_to_text(processed)
+
+        add_pair(our_text, correct_text)
+        diffs = find_diffs(our_text, correct_text)
+
+        if not diffs:
+            await msg.edit_text("✅ STT output matches YouTube captions perfectly!")
+            return
+
+        new_count = sum(1 for d in diffs if not d["already_have"])
+        existing_count = sum(1 for d in diffs if d["already_have"])
+        title = info.get("title", url)
+
+        lines = [f"📖 {title}", f"Found {len(diffs)} differences ({new_count} new, {existing_count} already fixed):"]
+        for d in diffs[:10]:
+            status = "✅" if d["already_have"] else "❌"
+            lines.append(f"{status} {d['affected_text']} → {d['value']}")
+
+        if len(diffs) > 10:
+            lines.append(f"... and {len(diffs) - 10} more")
+
+        lines.append(f"\nPair saved. Auto-applying rules...")
+
+        await msg.edit_text("\n".join(lines))
+
+        new_rules = [d for d in diffs if not d["already_have"]]
+        if new_rules:
+            await msg.edit_text(f"🔄 Auto-applying {len(new_rules)} rules from YouTube...")
+            new_rep = {}
+            for d in new_rules:
+                if d["rule_type"] == "WORD_REPLACEMENT":
+                    new_rep[d["key"]] = d["value"]
+            new_comp = []
+            for d in new_rules:
+                if d["rule_type"] == "COMPOUND":
+                    words = d["key"]
+                    new_comp.append((words[0], words[1], d["value"]))
+
+            from app.training.auto_learn import apply_rules
+            if apply_rules(new_rep, new_comp):
+                await msg.edit_text(f"✅ {len(new_rules)} rules applied! Restarting bot...")
+                await asyncio.sleep(1)
+                os.chdir(os.path.join(os.path.dirname(__file__), "..", ".."))
+                os.execvp("python", ["python", "-m", "app.main"])
+            else:
+                await msg.edit_text("❌ Failed to apply rules.")
+
+    except ImportError:
+        await msg.edit_text("❌ yt-dlp not installed. Run: pip install yt-dlp")
+    except Exception as e:
+        logger.error("learn_yt failed: %s", e, exc_info=True)
+        await msg.edit_text(f"❌ Error: {str(e)[:200]}")

@@ -37,12 +37,15 @@ WORD_REPLACEMENTS: dict[str, str] = {
     "គណនេរ": "គណនី",
     "គណនេ": "គណនី",
     "សុវិល": "សេវា",
-    "ពិត": "ការពិត",
     "អ": "App",
     "លីត": "",
     "អាខោន": "account",
     "ស្នា": "ស្នើ",
-    "អីចឹង": "អញ្ចឹង",
+    "ប្រេងសារ": "ប្រេងសាំង",
+    "រុយ": "Reuters",
+    "បង្អែក": "ពឹងផ្អែក",
+    "អ្នកនាង": "អ្នកទាំងអស់គ្នា",
+
 }
 
 FILLER_WORDS: set[str] = {"អា", "អី"}
@@ -131,7 +134,19 @@ KHMER_COMPOUNDS: list[tuple[str, str, str]] = [
     ("ថា", "តែ", "ថាតើ"),
     ("ទាំងអស់", "នេះ", "ទាំងអស់គ្នា"),
     ("មិនដែល", "សង្គម", "បណ្ដាញសង្គម"),
+    ("មិន", "ដែល", "មិនដែល"),
     ("ជម្រាបលា", "បាយ", "ជម្រាបលា"),
+    ("គួរតែ", "សង្ស័យ", "គួរឱ្យសង្ស័យ"),
+    ("តែ", "អ្នក", "តើអ្នក"),
+    ("ប៉", "ដល់", "ប៉ះពាល់ដល់"),
+    ("ឡាន", "ថ្លៃ", "ឡើងថ្លៃ"),
+    ("ជ្រាប", "លា", "ជម្រាបលា"),
+    ("ទៅ", "ជួយ", "ភ្លេចជួយ"),
+    ("ខំ", "មិន", "Comment"),
+    ("ភ្លេចជួយ", "Comment", "ភ្លេចជួយComment"),
+    ("រយ", "តើស", "Reuters"),
+    ("ការ", "ភាគី", "ការភាគី"),
+
 ]
 
 
@@ -154,27 +169,30 @@ def merge_khmer_compounds(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not words:
         return []
 
-    result: list[dict[str, Any]] = []
-    i = 0
-    while i < len(words):
-        current = words[i]
-        merged = False
-
-        for first, second, compound in KHMER_COMPOUNDS:
-            if current["word"] == first and i + 1 < len(words) and words[i + 1]["word"] == second:
-                merged_word = {
-                    "word": compound,
-                    "start": current["start"],
-                    "end": words[i + 1]["end"],
-                }
-                result.append(merged_word)
-                i += 2
-                merged = True
-                break
-
-        if not merged:
-            result.append(current)
-            i += 1
+    result = list(words)
+    changed = True
+    while changed:
+        changed = False
+        merged: list[dict[str, Any]] = []
+        i = 0
+        while i < len(result):
+            current = result[i]
+            matched = False
+            for first, second, compound in KHMER_COMPOUNDS:
+                if current["word"] == first and i + 1 < len(result) and result[i + 1]["word"] == second:
+                    merged.append({
+                        "word": compound,
+                        "start": current["start"],
+                        "end": result[i + 1]["end"],
+                    })
+                    i += 2
+                    matched = True
+                    changed = True
+                    break
+            if not matched:
+                merged.append(current)
+                i += 1
+        result = merged
 
     return result
 
