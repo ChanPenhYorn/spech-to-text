@@ -167,60 +167,71 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Compare last STT result with user-provided correct text. Usage: /learn <correct text>"""
-    user = update.effective_user
-    last_stt = context.user_data.get("last_stt")
-    if not last_stt:
-        await update.message.reply_text("No previous transcription found. Send an audio file first.")
-        return
+    try:
+        user = update.effective_user
+        last_stt = context.user_data.get("last_stt")
+        if not last_stt:
+            await update.message.reply_text("No previous transcription found. Send an audio file first.")
+            return
 
-    args = context.args
-    if not args:
-        await update.message.reply_text("Usage: /learn <correct text>")
-        return
+        args = context.args
+        if not args:
+            await update.message.reply_text("Usage: /learn <correct text>")
+            return
 
-    correct_text = " ".join(args)
-    add_pair(last_stt, correct_text)
-    diffs = find_diffs(last_stt, correct_text)
+        correct_text = " ".join(args)
+        add_pair(last_stt, correct_text)
+        diffs = find_diffs(last_stt, correct_text)
 
-    if not diffs:
-        await update.message.reply_text("No differences found — STT output matches!")
-        return
+        if not diffs:
+            await update.message.reply_text("No differences found — STT output matches!")
+            return
 
-    new_count = sum(1 for d in diffs if not d["already_have"])
-    existing_count = sum(1 for d in diffs if d["already_have"])
+        new_count = sum(1 for d in diffs if not d["already_have"])
+        existing_count = sum(1 for d in diffs if d["already_have"])
 
-    lines = [f"Found {len(diffs)} differences ({new_count} new, {existing_count} already fixed):"]
-    for d in diffs[:10]:
-        status = "✅" if d["already_have"] else "❌"
-        lines.append(f"{status} {d['affected_text']} → {d['value']}")
+        parts = []
+        status_lines = [f"Found {len(diffs)} differences ({new_count} new, {existing_count} already fixed):"]
+        for d in diffs[:20]:
+            status = "✅" if d["already_have"] else "❌"
+            status_lines.append(f"{status} {d['affected_text']} → {d['value']}")
 
-    if len(diffs) > 10:
-        lines.append(f"... and {len(diffs) - 10} more")
+        if len(diffs) > 20:
+            status_lines.append(f"... and {len(diffs) - 20} more")
 
-    await update.message.reply_text("\n".join(lines))
+        msg = "\n".join(status_lines)
+        if len(msg) > 4000:
+            msg = msg[:3997] + "..."
 
-    # Auto-apply new rules
-    new_rules = [d for d in diffs if not d["already_have"]]
-    if new_rules:
-        await update.message.reply_text(f"🔄 Auto-applying {len(new_rules)} new rules...")
-        new_rep = {}
-        for d in new_rules:
-            if d["rule_type"] == "WORD_REPLACEMENT":
-                new_rep[d["key"]] = d["value"]
-        new_comp = []
-        for d in new_rules:
-            if d["rule_type"] == "COMPOUND":
-                words = d["key"]
-                new_comp.append((words[0], words[1], d["value"]))
+        await update.message.reply_text(msg)
 
-        from app.training.auto_learn import apply_rules
-        if apply_rules(new_rep, new_comp):
-            await update.message.reply_text(f"✅ Rules applied! Restarting bot to activate...")
-            await asyncio.sleep(1)
-            os.chdir(os.path.join(os.path.dirname(__file__), "..", ".."))
-            os.execvp("python", ["python", "-m", "app.main"])
+        # Auto-apply new rules
+        new_rules = [d for d in diffs if not d["already_have"]]
+        if new_rules:
+            await update.message.reply_text(f"🔄 Auto-applying {len(new_rules)} new rules...")
+            new_rep = {}
+            for d in new_rules:
+                if d["rule_type"] == "WORD_REPLACEMENT":
+                    new_rep[d["key"]] = d["value"]
+            new_comp = []
+            for d in new_rules:
+                if d["rule_type"] == "COMPOUND":
+                    words = d["key"]
+                    new_comp.append((words[0], words[1], d["value"]))
+
+            from app.training.auto_learn import apply_rules
+            if apply_rules(new_rep, new_comp):
+                await update.message.reply_text(f"✅ Rules applied! Restarting bot to activate...")
+                await asyncio.sleep(2)
+                os.chdir(os.path.join(os.path.dirname(__file__), "..", ".."))
+                os.execvp("python", ["python", "-m", "app.main"])
+            else:
+                await update.message.reply_text("❌ Failed to apply rules.")
         else:
-            await update.message.reply_text("❌ Failed to apply rules.")
+            await update.message.reply_text("All differences already covered by existing rules ✅")
+    except Exception as e:
+        logger.error("learn_command failed: %s", e, exc_info=True)
+        await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
 
 
 async def learn_yt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
