@@ -88,6 +88,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     start_time = time.time()
 
     try:
+        processing_msg = await message.reply_text(PROCESSING_MESSAGE)
+
         file = await audio.get_file()
         temp_audio = await download_audio(file, file_name)
 
@@ -106,8 +108,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             engine_label = "V1 Google STT standard"
 
         is_whisper = engine == "v3"
-
-        processing_msg = await message.reply_text(PROCESSING_MESSAGE)
 
         result = await loop.run_in_executor(None, transcribe_fn, temp_wav)
 

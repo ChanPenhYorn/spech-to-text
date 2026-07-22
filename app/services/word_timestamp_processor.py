@@ -56,4 +56,6 @@ def process_segments(
 
     words = merge_khmer_compounds(words)
 
+    words = replace_words(words)
+
     return _from_word_dicts(words)
