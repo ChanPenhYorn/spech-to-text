@@ -131,6 +131,10 @@ def _transcribe_chunk(audio_path: str, time_offset: float, token: str) -> tuple[
                     "សន្យា", "បណ្ដាញ", "សង្គម", "បណ្ដាញសង្គម",
                     "សង្ស័យ", "គួរឲ្យ", "ប្រាក់ខែ",
                     "អញ្ចឹង", "ការពិត", "និង",
+                    "ChatGPT", "Canva AI", "Google Gemini",
+                    "Perplexity AI", "CapCut", "Subtitle",
+                    "Effect", "content creator", "designer",
+                    "Bye bye", "Follow",
                 ],
                 "boost": 10,
             }],
@@ -217,6 +221,21 @@ def _transcribe_chunk(audio_path: str, time_offset: float, token: str) -> tuple[
     return segments, detected_lang, chunk_duration
 
 
+def _transcribe_tail(audio_path: str, from_time: float, duration: float, token: str) -> list[Segment]:
+    tail_path = create_temp_file(suffix=".wav")
+    try:
+        tail_len = duration - from_time
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-ss", str(from_time), "-t", str(tail_len),
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", tail_path],
+            capture_output=True, text=True, timeout=60,
+        )
+        segs, _, _ = _transcribe_chunk(tail_path, from_time, token)
+        return segs
+    finally:
+        cleanup_temp(tail_path)
+
+
 def transcribe(audio_path: str) -> TranscriptionResult:
     duration = _get_duration(audio_path)
 
@@ -234,8 +253,8 @@ def transcribe(audio_path: str) -> TranscriptionResult:
         all_segments: list[Segment] = []
         detected_lang = "km"
         total_duration = 0.0
-        prev_last_end = 0.0
 
+        prev_last_end = 0.0
         for i, (chunk_start, actual_start, chunk_path) in enumerate(temp_chunks):
             segs, lang, chunk_dur = _transcribe_chunk(chunk_path, actual_start, token)
             if i > 0:
@@ -249,6 +268,18 @@ def transcribe(audio_path: str) -> TranscriptionResult:
                 if last_end > total_duration:
                     total_duration = last_end
             logger.info("Chunk %d/%d done: %d segments", i + 1, len(temp_chunks), len(segs))
+
+        if total_duration < duration - 2:
+            tail_start = total_duration - CHUNK_OVERLAP
+            logger.info("Audio tail missing (%.1fs of %.1fs). Retranscribing tail from %.1fs...",
+                        total_duration, duration, tail_start)
+            tail_segs = _transcribe_tail(audio_path, max(0, tail_start), duration, token)
+            tail_segs = [s for s in tail_segs if s.start >= total_duration]
+            if tail_segs:
+                all_segments.extend(tail_segs)
+                total_duration = max(total_duration, tail_segs[-1].end)
+                logger.info("Tail transcription added %d segments, new duration %.1fs",
+                            len(tail_segs), total_duration)
 
         result = TranscriptionResult(
             language=detected_lang,

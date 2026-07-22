@@ -9,9 +9,8 @@ async-timeout==5.0.1
 attrs==26.1.0
 audioread==3.1.0
 av==15.1.0
-backports.asyncio.runner==1.2.0
 certifi==2026.6.17
-cffi==2.0.0
+cffi>=1.17
 charset-normalizer==3.4.9
 click==8.1.8
 coloredlogs==15.0.1
@@ -55,8 +54,6 @@ Jinja2==3.1.6
 jiter==0.16.0
 joblib==1.5.3
 lazy-loader==0.5
-librosa==0.11.0
-llvmlite==0.43.0
 markdown-it-py==3.0.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
@@ -65,9 +62,8 @@ msgpack==1.1.2
 multidict==6.7.1
 multiprocess==0.70.18
 networkx==3.2.1
-numba==0.60.0
-numpy==2.0.2
-onnxruntime==1.19.2
+numpy==2.5.1
+onnxruntime>=1.24
 openai==2.46.0
 packaging==26.2
 pandas==2.3.3
