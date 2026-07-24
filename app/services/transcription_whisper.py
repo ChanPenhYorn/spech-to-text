@@ -21,7 +21,7 @@ def _get_model():
         logger.info("Loading Whisper Khmer model (faster-whisper)...")
         t0 = time.time()
         _model = WhisperModel(
-            "PhanithLIM/whisper-tiny-khmer-ct2",
+            "PhanithLIM/whisper-small-khmer-ct2",
             device="cpu",
             compute_type="int8",
         )

@@ -111,14 +111,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         result = await loop.run_in_executor(None, transcribe_fn, temp_wav)
 
-        if is_whisper:
-            processed = result.segments
-            plain_text = segments_to_text(processed)
-        else:
-            processed = await loop.run_in_executor(
-                None, process_segments, result.segments, temp_wav
-            )
-            plain_text = segments_to_text(processed)
+        processed = await loop.run_in_executor(
+            None, process_segments, result.segments, temp_wav
+        )
+        plain_text = segments_to_text(processed)
 
         context.user_data["last_stt"] = plain_text
 
